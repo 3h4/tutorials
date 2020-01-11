@@ -1,0 +1,1240 @@
+**Dear reader,** 
+ 
+This article series was originally posted on [Medium.com](//medium.com), at the end of 2016. Three years have since passed, we are at the beginning of a new decade, and have luckily not seen the robot apocalypse yet. However, TensorFlow 2.0 has been released and this tutorial is unfortionatley completely broken.
+
+Therefore it is now "open-sourced", and the source is available here: https://github.com/3h4/tutorials. If you happen to go trough this tutorial and would like to help to make up to date, please accept my deepest gratitude. The scematics are probably correct, perhaps only some code and explanations should be changed. And also things should be labeled better in the code and we should not use line numbers for reference.
+
+Some key changes in TensorFlow 2.0 are the following:
+- *No sessions or placeholders*
+- The `Session.run` call is replaced with a call to `forward`
+- The optional `tf.function` decorator can be added for performance
+- Eager execution (no computational graph?!)
+
+You can read more on the release [here](https://blog.tensorflow.org/2019/09/tensorflow-20-is-now-available.html), and how to [migrate](https://www.tensorflow.org/guide/migrate).
+If you think you are an expert you can read [this](https://www.tensorflow.org/tutorials/quickstart/advanced) (only for experts 🧐😜). Anyways, here comes some questions on the new API:
+
+??
+What are *placholders* replaced with?
+\w: `tf.gpu_accelerated_placeholders`
+\w: `tf.variables` 
+\c: Arguments to the `forward` function.
+\penalty:5
+\shownext:true
+??
+
+??
+What should `Session.run` be replaced with?
+\w: A Python Class 
+\w: `tf.TensorCalc` 
+\c: A Python function
+??
+
+??
+Do you need to use the `feed_dict`?
+\w: Yes
+\c: No
+??
+
+
+And that was all, here comes the tutorial:
+
+---
+
+
+
+In this tutorial I’ll explain how to build a simple working Recurrent Neural Network in TensorFlow. There are seven sections where various aspects and techniques of building Recurrent Neural Networks in TensorFlow are covered. A short introduction to TensorFlow is available [here](/@3h4/Introduction_to_TensorFlow_—_CPU_vs_GPU). 
+For now, let’s get started with the RNN!
+
+# Hello World RNN!
+
+This is the first section of six where a bare minimum implementation is built.
+
+### What is a RNN?
+It is short for “Recurrent Neural Network”, and is basically a neural network that can be used when your data is treated as a sequence, where the particular order of the data-points matter. More importantly, this sequence can be of *arbitrary length*.
+
+The most straight-forward example is perhaps a time-series of numbers, where the task is to predict the next value given previous values. The input to the RNN at every time-step is the *current value* as well as a *state vector* which represent what the network has “seen” at time-steps before. This state-vector is the encoded memory of the RNN, initially set to zero.
+
+![Schematic of a RNN processing sequential data over time.](thumbnail.png)
+
+The best and most comprehensive article explaining RNN:s I’ve found so far is [this article](https://arxiv.org/pdf/1506.00019.pdf) by researchers at UCSD, highly recommended. For now you only need to understand the basics, read it until the “Modern RNN architectures”-section. That will be covered later.
+
+Although this article contains some explanations, it is mostly focused on the practical part, how to build it. You are encouraged to look up more theory on the Internet, there are plenty of good explanations.
+
+### Setup
+
+We will build a simple Echo-RNN that remembers the input data and then echoes it after a few time-steps. First let’s set some constants we’ll need, what they mean will become clear in a moment.
+
+``` py
+from __future__ import print_function, division
+import numpy as np
+import tensorflow as tf
+import matplotlib.pyplot as plt
+
+num_epochs = 100
+total_series_length = 50000
+truncated_backprop_length = 15
+state_size = 4
+num_classes = 2
+echo_step = 3
+batch_size = 5
+num_batches = total_series_length//batch_size//truncated_backprop_length
+
+```
+
+### Generate data
+Now generate the training data, the input is basically a random binary vector. The output will be the “echo” of the input, shifted `echo_step` steps to the right.
+
+``` py
+def generateData():
+    x = np.array(np.random.choice(num_classes, total_series_length, p=[0.5, 0.5]))
+    y = np.roll(x, echo_step)
+    y[0:echo_step] = 0
+
+    x = x.reshape((batch_size, -1))  # The first index changing slowest, subseries as rows
+    y = y.reshape((batch_size, -1))
+
+    return (x, y)
+```
+
+
+Notice the reshaping of the data into a matrix with `batch_size` rows. Neural networks are trained by approximating the gradient of loss function with respect to the neuron-weights, by looking at only a small subset of the data, also known as a *mini-batch*. The theoretical reason for doing this is further elaborated in [this question](https://www.quora.com/In-deep-learning-why-dont-we-use-the-whole-training-set-to-compute-the-gradient/answer/Ian-Goodfellow?srid=9KXj). The reshaping takes the whole dataset and puts it into a matrix, that later will be sliced up into these mini-batches.
+
+![Schematic of the reshaped data-matrix, arrow curves shows adjacent time-steps that ended up on different rows. Light-gray rectangle represent a “zero” and dark-gray a “one”.](reshape.png)
+
+
+### Building the computational graph
+TensorFlow works by first building up a computational graph, that specifies what operations will be done. The input and output of this graph is typically multidimensional arrays, also known as tensors. The graph, or parts of it can then be executed iteratively in a session, this can either be done on the CPU, GPU or even a resource on a remote server.
+
+#### Variables and placeholders
+The two basic TensorFlow data-structures that will be used in this example are *placeholders* and *variables*. On each run the batch data is fed to the placeholders, which are “starting nodes” of the computational graph. Also the RNN-state is supplied in a placeholder, which is saved from the output of the previous run.
+
+``` py
+batchX_placeholder = tf.placeholder(tf.float32, [batch_size, truncated_backprop_length])
+batchY_placeholder = tf.placeholder(tf.int32, [batch_size, truncated_backprop_length])
+
+init_state = tf.placeholder(tf.float32, [batch_size, state_size])
+
+```
+
+The weights and biases of the network are declared as TensorFlow *variables*, which makes them persistent across runs and enables them to be updated incrementally for each batch.
+
+``` py
+W = tf.Variable(np.random.rand(state_size+1, state_size), dtype=tf.float32)
+b = tf.Variable(np.zeros((1,state_size)), dtype=tf.float32)
+
+W2 = tf.Variable(np.random.rand(state_size, num_classes), dtype=tf.float32)
+b2 = tf.Variable(np.zeros((1,num_classes)), dtype=tf.float32)
+```
+
+The figure below shows the input data-matrix, and the current batch `batchX_placeholder` is in the dashed rectangle. As we will see later, this “batch window” is slided `truncated_backprop_length` steps to the right at each run, hence the arrow. In our example below `batch_size = 3`, `truncated_backprop_length = 3`, and `total_series_length = 36`. Note that these numbers are just for visualization purposes, the values are different in the code. The series order index is shown as numbers in a few of the data-points.
+
+![Schematic of the training data, the current batch is sliced out in the dashed rectangle. The time-step index of the datapoint is displayed.](sliding-window.jpg)
+
+#### Unpacking
+Now it’s time to build the part of the graph that resembles the actual RNN computation, first we want to split the batch data into adjacent time-steps.
+
+``` py
+# Unpack columns
+inputs_series = tf.unstack(batchX_placeholder, axis=1)
+labels_series = tf.unstack(batchY_placeholder, axis=1)
+```
+
+As you can see in the picture below that is done by unpacking the columns (`axis = 1`) of the batch into a Python list. The RNN will simultaneously be training on different parts in the time-series; steps 4 to 6, 16 to 18 and 28 to 30 in the current batch-example. The reason for using the variable names `“plural”_”series”` is to emphasize that the variable is a list that represent a time-series with multiple entries at each step.
+
+![Schematic of the current batch split into columns, the order index is shown on each data-point and arrows show adjacent time-steps.](a-window.png)
+
+The fact that the training is done on three places simultaneously in our time-series, requires us to save three instances of states when propagating forward. That has already been accounted for, as you see that the `init_state` placeholder has `batch_size` rows.
+
+#### Forward pass
+Next let’s build the part of the graph that does the actual RNN computation.
+
+``` py
+# Forward pass
+current_state = init_state
+states_series = []
+for current_input in inputs_series:
+    current_input = tf.reshape(current_input, [batch_size, 1])
+    input_and_state_concatenated = tf.concat([current_input, current_state], 1)  # Increasing number of columns
+
+    next_state = tf.tanh(tf.matmul(input_and_state_concatenated, W) + b)  # Broadcasted addition
+    states_series.append(next_state)
+    current_state = next_state
+```
+
+Notice the concatenation on line 6, what we actually want to do is calculate the sum of two affine transforms `current_input * Wa + current_state * Wb` in the figure below. By concatenating those two tensors you will only use one matrix multiplication. The addition of the bias `b` is [broadcasted](https://docs.scipy.org/doc/numpy/user/basics.broadcasting.html) on all samples in the batch. 
+
+![Schematic of the computations of the matrices on line 8 in the code example above, the non-linear transform arctan is omitted.](transform.png)
+
+You may wonder the variable name `truncated_backprop_length` is supposed to mean. When a RNN is trained, it is actually treated as a deep neural network with reoccurring weights in every layer. These layers will not be unrolled to the beginning of time, that would be too computationally expensive, and are therefore truncated at a limited number of time-steps. In our sample schematics above, the error is backpropagated three steps in our batch.
+
+#### Calculating loss
+This is the final part of the graph, a fully connected softmax layer from the state to the output that will make the classes *one-hot encoded*, and then calculating the loss of the batch.
+
+``` py
+logits_series = [tf.matmul(state, W2) + b2 for state in states_series] #Broadcasted addition
+predictions_series = [tf.nn.softmax(logits) for logits in logits_series]
+
+
+losses =[tf.nn.sparse_softmax_cross_entropy_with_logits(logits=logits, labels=labels) for logits, labels in zip(logits_series,labels_series)]
+total_loss = tf.reduce_mean(losses)
+
+train_step = tf.train.AdagradOptimizer(0.3).minimize(total_loss)
+```
+
+The last line is adding the training functionality, TensorFlow will perform back-propagation for us automatically — the computation graph is executed once for each mini-batch and the network-weights are updated incrementally.
+
+
+Notice the API call to `sparse_softmax_cross_entropy_with_logits`, it automatically calculates the softmax internally and then computes the cross-entropy. In our example the classes are mutually exclusive (they are either zero or one), which is the reason for using the “Sparse-softmax”, you can read more about it [in the API](https://www.tensorflow.org/api_docs/python/tf/nn/sparse_softmax_cross_entropy_with_logits). The usage is to have `logits` is of shape `[batch_size, num_classes]` and `labels` of shape `[batch_size]`.
+
+
+### Visualizing the training
+There is a visualization function so we can se what’s going on in the network as we train. It will plot the loss over the time, show training input, training output and the current predictions by the network on different sample series in a training batch.
+
+``` py
+def plot(loss_list, predictions_series, batchX, batchY):
+    plt.subplot(2, 3, 1)
+    plt.cla()
+    plt.plot(loss_list)
+
+    for batch_series_idx in range(batch_size):
+        one_hot_output_series = np.array(predictions_series)[:, batch_series_idx, :]
+        single_output_series = np.array([(1 if out[0] < 0.5 else 0) for out in one_hot_output_series])
+
+        plt.subplot(2, 3, batch_series_idx + 2)
+        plt.cla()
+        plt.axis([0, truncated_backprop_length, 0, 2])
+        left_offset = range(truncated_backprop_length)
+        plt.bar(left_offset, batchX[batch_series_idx, :], width=1, color="blue")
+        plt.bar(left_offset, batchY[batch_series_idx, :] * 0.5, width=1, color="red")
+        plt.bar(left_offset, single_output_series * 0.3, width=1, color="green")
+
+    plt.draw()
+    plt.pause(0.0001)
+```
+
+
+#### Running a training session
+It’s time to wrap up and train the network, in TensorFlow the graph is executed in a session. New data is generated on each epoch (not the usual way to do it, but it works in this case since everything is predictable).
+
+
+``` py
+with tf.Session() as sess:
+    sess.run(tf.global_variables_initializer())
+    plt.ion()
+    plt.figure()
+    plt.show()
+    loss_list = []
+
+    for epoch_idx in range(num_epochs):
+        x,y = generateData()
+
+        _current_state = np.zeros((batch_size, state_size))
+
+        print("New data, epoch", epoch_idx)
+
+        for batch_idx in range(num_batches):
+            start_idx = batch_idx * truncated_backprop_length
+            end_idx = start_idx + truncated_backprop_length
+
+            batchX = x[:,start_idx:end_idx]
+            batchY = y[:,start_idx:end_idx]
+
+            _total_loss, _train_step, _current_state, _predictions_series = sess.run(
+                [total_loss, train_step, current_state, predictions_series],
+                feed_dict={
+                    batchX_placeholder:batchX,
+                    batchY_placeholder:batchY,
+                    init_state:_current_state
+                })
+
+            loss_list.append(_total_loss)
+
+            if batch_idx%100 == 0:
+                print("Step",batch_idx, "Loss", _total_loss)
+                plot(loss_list, _predictions_series, batchX, batchY)
+
+plt.ioff()
+plt.show()
+```
+
+You can see that we are moving `truncated_backprop_length` steps forward on each iteration (line 15–19), but it is possible have different strides. This subject is further elaborated in [this article](https://r2rt.com/styles-of-truncated-backpropagation.html). The downside with doing this is that `truncated_backprop_length` need to be significantly larger than the time dependencies (three steps in our case) in order to encapsulate the relevant training data. Otherwise there might a lot of “misses”, as you can see on the figure below.
+
+![Time series of squares, the elevated black square symbolizes an echo-output, which is activated three steps from the echo input (black square). The sliding batch window is also striding three steps at each run, which in our sample case means that no batch will encapsulate the dependency, so it can not train.](misses.png)
+
+Also realize that this is just simple example to explain how a RNN works, this functionality could easily be programmed in just a few lines of code. The network will be able to exactly learn the echo behavior so there is no need for testing data.
+
+The program will update the plot as training progresses, shown in the picture below. Blue bars denote a training input signal (binary one), red bars show echos in the training output and green bars are the echos the net is generating. The different bar plots show different sample series in the current batch.
+
+Our algorithm will fairly quickly learn the task. The graph in the top-left corner shows the output of the loss function, but why are there spikes in the curve? Think of it for a moment, answer is below.
+
+
+![Visualization of the loss, input and output training data (blue, red) as well as the prediction (green).](training.png)
+
+The reason for the spikes is that we are starting on a new epoch, and generating new data. Since the matrix is reshaped, the first element on each row is adjacent to the last element in the previous row. The first few elements on all rows (except the first) have dependencies that will not be included in the state, so the net will always perform badly on the first batch.
+
+#### Whole program
+
+This is the whole runnable program, just copy-paste and run. After each part in the article series the whole runnable program will be presented. If a line is referenced by number, these are the line numbers that we mean.
+
+``` py
+from __future__ import print_function, division
+import numpy as np
+import tensorflow as tf
+import matplotlib.pyplot as plt
+
+num_epochs = 100
+total_series_length = 50000
+truncated_backprop_length = 15
+state_size = 4
+num_classes = 2
+echo_step = 3
+batch_size = 5
+num_batches = total_series_length//batch_size//truncated_backprop_length
+
+def generateData():
+    x = np.array(np.random.choice(2, total_series_length, p=[0.5, 0.5]))
+    y = np.roll(x, echo_step)
+    y[0:echo_step] = 0
+
+    x = x.reshape((batch_size, -1))  # The first index changing slowest, subseries as rows
+    y = y.reshape((batch_size, -1))
+
+    return (x, y)
+
+batchX_placeholder = tf.placeholder(tf.float32, [batch_size, truncated_backprop_length])
+batchY_placeholder = tf.placeholder(tf.int32, [batch_size, truncated_backprop_length])
+
+init_state = tf.placeholder(tf.float32, [batch_size, state_size])
+
+W = tf.Variable(np.random.rand(state_size+1, state_size), dtype=tf.float32)
+b = tf.Variable(np.zeros((1,state_size)), dtype=tf.float32)
+
+W2 = tf.Variable(np.random.rand(state_size, num_classes),dtype=tf.float32)
+b2 = tf.Variable(np.zeros((1,num_classes)), dtype=tf.float32)
+
+# Unpack columns
+inputs_series = tf.unstack(batchX_placeholder, axis=1)
+labels_series = tf.unstack(batchY_placeholder, axis=1)
+
+# Forward pass
+current_state = init_state
+states_series = []
+for current_input in inputs_series:
+    current_input = tf.reshape(current_input, [batch_size, 1])
+    input_and_state_concatenated = tf.concat([current_input, current_state], 1)  # Increasing number of columns
+
+    next_state = tf.tanh(tf.matmul(input_and_state_concatenated, W) + b)  # Broadcasted addition
+    states_series.append(next_state)
+    current_state = next_state
+
+logits_series = [tf.matmul(state, W2) + b2 for state in states_series] #Broadcasted addition
+predictions_series = [tf.nn.softmax(logits) for logits in logits_series]
+
+losses = [tf.nn.sparse_softmax_cross_entropy_with_logits(logits=logits, labels=labels) for logits, labels in zip(logits_series,labels_series)]
+total_loss = tf.reduce_mean(losses)
+
+train_step = tf.train.AdagradOptimizer(0.3).minimize(total_loss)
+
+def plot(loss_list, predictions_series, batchX, batchY):
+    plt.subplot(2, 3, 1)
+    plt.cla()
+    plt.plot(loss_list)
+
+    for batch_series_idx in range(num_batches):
+        one_hot_output_series = np.array(predictions_series)[:, batch_series_idx, :]
+        single_output_series = np.array([(1 if out[0] < 0.5 else 0) for out in one_hot_output_series])
+
+        plt.subplot(2, 3, batch_series_idx + 2)
+        plt.cla()
+        plt.axis([0, truncated_backprop_length, 0, 2])
+        left_offset = range(truncated_backprop_length)
+        plt.bar(left_offset, batchX[batch_series_idx, :], width=1, color="blue")
+        plt.bar(left_offset, batchY[batch_series_idx, :] * 0.5, width=1, color="red")
+        plt.bar(left_offset, single_output_series * 0.3, width=1, color="green")
+
+    plt.draw()
+    plt.pause(0.0001)
+
+
+with tf.Session() as sess:
+    sess.run(tf.global_variables_initializer())
+    plt.ion()
+    plt.figure()
+    plt.show()
+    loss_list = []
+
+    for epoch_idx in range(num_epochs):
+        x,y = generateData()
+        _current_state = np.zeros((batch_size, state_size))
+
+        print("New data, epoch", epoch_idx)
+
+        for batch_idx in range(num_batches):
+            start_idx = batch_idx * truncated_backprop_length
+            end_idx = start_idx + truncated_backprop_length
+
+            batchX = x[:,start_idx:end_idx]
+            batchY = y[:,start_idx:end_idx]
+
+            _total_loss, _train_step, _current_state, _predictions_series = sess.run(
+                [total_loss, train_step, current_state, predictions_series],
+                feed_dict={
+                    batchX_placeholder:batchX,
+                    batchY_placeholder:batchY,
+                    init_state:_current_state
+                })
+
+            loss_list.append(_total_loss)
+
+            if batch_idx%100 == 0:
+                print("Step",batch_idx, "Loss", _total_loss)
+                plot(loss_list, _predictions_series, batchX, batchY)
+
+plt.ioff()
+plt.show()
+```
+
+# Using the RNN Api in TensorFlow
+
+In this section we will be simplify the computational graph creation by using the native TensorFlow RNN API. 
+
+### Simple graph creation
+Remember where we made the unpacking and forward passes in the vanilla RNN?
+
+``` py
+# Unpack columns
+inputs_series = tf.unpack(batchX_placeholder, axis=1)
+labels_series = tf.unpack(batchY_placeholder, axis=1)
+```
+
+
+``` py 
+# Forward pass
+current_state = init_state
+states_series = []
+for current_input in inputs_series:
+    current_input = tf.reshape(current_input, [batch_size, 1])
+    input_and_state_concatenated = tf.concat(1, [current_input, current_state])  # Increasing number of columns
+
+    next_state = tf.tanh(tf.matmul(input_and_state_concatenated, W) + b)  # Broadcasted addition
+    states_series.append(next_state)
+    current_state = next_state
+```
+
+Replace the piece of code above with this:
+
+``` py
+# Unpack columns
+inputs_series = tf.split(axis=1, num_or_size_splits=truncated_backprop_length, value=batchX_placeholder)
+labels_series = tf.unstack(batchY_placeholder, axis=1)
+
+
+# Forward passes
+cell = tf.contrib.rnn.BasicRNNCell(state_size)
+states_series, current_state = tf.contrib.rnn.static_rnn(cell, inputs_series, init_state)
+```
+
+You may also remove the weight- and bias matrices `W` and `b` declared earlier. The inner workings of the RNN are now hidden “under the hood”. Notice the usage of `split` instead of `unpack` when assigning the `x_inputs` variable. The `tf.nn.rnn` accepts a list of inputs of shape `[batch_size, input_size]` , and the `input_size` is simply one in our case (input is just a series of scalars). Split doesn’t remove the singular dimension, but unpack does, you can read more about it here. It doesn’t really matter anyways, since we still had to reshape the inputs in our previous example before the matrix multiplication. The `tf.nn.rnn` unrolls the RNN and creates the graph automatically, so we can remove the for-loop. The function returns a series of previous states as well as the last state in the same shape as we did before manually, here is the printed output of these variables.
+
+
+### Whole program
+Here is the full code:
+
+``` py
+from __future__ import print_function, division
+import numpy as np
+import tensorflow as tf
+import matplotlib.pyplot as plt
+
+num_epochs = 100
+total_series_length = 50000
+truncated_backprop_length = 15
+state_size = 4
+num_classes = 2
+echo_step = 3
+batch_size = 5
+num_batches = total_series_length//batch_size//truncated_backprop_length
+
+def generateData():
+    x = np.array(np.random.choice(2, total_series_length, p=[0.5, 0.5]))
+    y = np.roll(x, echo_step)
+    y[0:echo_step] = 0
+
+    x = x.reshape((batch_size, -1))  # The first index changing slowest, subseries as rows
+    y = y.reshape((batch_size, -1))
+
+    return (x, y)
+
+batchX_placeholder = tf.placeholder(tf.float32, [batch_size, truncated_backprop_length])
+batchY_placeholder = tf.placeholder(tf.int32, [batch_size, truncated_backprop_length])
+
+init_state = tf.placeholder(tf.float32, [batch_size, state_size])
+
+
+W2 = tf.Variable(np.random.rand(state_size, num_classes),dtype=tf.float32)
+b2 = tf.Variable(np.zeros((1,num_classes)), dtype=tf.float32)
+
+# Unpack columns
+inputs_series = tf.split(axis=1, num_or_size_splits=truncated_backprop_length, value=batchX_placeholder)
+labels_series = tf.unstack(batchY_placeholder, axis=1)
+
+# Forward pass
+cell = tf.contrib.rnn.BasicRNNCell(state_size)
+states_series, current_state = tf.contrib.rnn.static_rnn(cell, inputs_series, init_state)
+
+logits_series = [tf.matmul(state, W2) + b2 for state in states_series] #Broadcasted addition
+predictions_series = [tf.nn.softmax(logits) for logits in logits_series]
+
+losses = [tf.nn.sparse_softmax_cross_entropy_with_logits(logits=logits, labels=labels) for logits, labels in zip(logits_series,labels_series)]
+total_loss = tf.reduce_mean(losses)
+
+train_step = tf.train.AdagradOptimizer(0.3).minimize(total_loss)
+
+def plot(loss_list, predictions_series, batchX, batchY):
+    plt.subplot(2, 3, 1)
+    plt.cla()
+    plt.plot(loss_list)
+
+    for batch_series_idx in range(num_batches):
+        one_hot_output_series = np.array(predictions_series)[:, batch_series_idx, :]
+        single_output_series = np.array([(1 if out[0] < 0.5 else 0) for out in one_hot_output_series])
+
+        plt.subplot(2, 3, batch_series_idx + 2)
+        plt.cla()
+        plt.axis([0, truncated_backprop_length, 0, 2])
+        left_offset = range(truncated_backprop_length)
+        plt.bar(left_offset, batchX[batch_series_idx, :], width=1, color="blue")
+        plt.bar(left_offset, batchY[batch_series_idx, :] * 0.5, width=1, color="red")
+        plt.bar(left_offset, single_output_series * 0.3, width=1, color="green")
+
+    plt.draw()
+    plt.pause(0.0001)
+
+
+with tf.Session() as sess:
+    sess.run(tf.global_variables_initializer())
+    plt.ion()
+    plt.figure()
+    plt.show()
+    loss_list = []
+
+    for epoch_idx in range(num_epochs):
+        x,y = generateData()
+        _current_state = np.zeros((batch_size, state_size))
+
+        print("New data, epoch", epoch_idx)
+
+        for batch_idx in range(num_batches):
+            start_idx = batch_idx * truncated_backprop_length
+            end_idx = start_idx + truncated_backprop_length
+
+            batchX = x[:,start_idx:end_idx]
+            batchY = y[:,start_idx:end_idx]
+
+            _total_loss, _train_step, _current_state, _predictions_series = sess.run(
+                [total_loss, train_step, current_state, predictions_series],
+                feed_dict={
+                    batchX_placeholder:batchX,
+                    batchY_placeholder:batchY,
+                    init_state:_current_state
+                })
+
+            loss_list.append(_total_loss)
+
+            if batch_idx%100 == 0:
+                print("Step",batch_idx, "Loss", _total_loss)
+                plot(loss_list, _predictions_series, batchX, batchY)
+
+plt.ioff()
+plt.show()
+```
+
+
+
+In the next section we will improve the RNN by using another architecture called “Long short-term memory” or LSTM. Actually this is not necessary since our network already can solve our toy problem. But remember that our goal is to learn to use TensorFlow properly, not to solve the actual problem which is trivial :)
+
+# Using the LSTM Api in TensorFlow
+Now we will go about to build a modification of a RNN that called a “Recurrent Neural Network with Long short-term memory” or RNN-LSTM. This architecture was pioneered by [Jürgen Schmidhuber](https://www.youtube.com/watch?v=0YLpp_TVhLY) among others. One problem with the RNN when using long time-dependencies (`truncated_backprop_length` is large) is the [“vanishing gradient problem”](http://neuralnetworksanddeeplearning.com/chap5.html). One way to counter this is using a state that is “protected” and “selective”. The RNN-LSTM remembers, forgets and chooses what to pass on and output depending on the current state and input.
+
+
+Since this primarily is a practical tutorial I won’t go into more detail about the theory, I recommend reading [this article again](https://arxiv.org/pdf/1506.00019.pdf), continue with the “Modern RNN architectures”. After you have done that read and look at the figures on [this page](http://colah.github.io/posts/2015-08-Understanding-LSTMs/). Notice that the last mentioned resource are using vector concatenation in their calculations.
+
+
+### Different state
+A LSTM have a “cell state” and a “hidden state”, to account for this you need to remove `_current_state` on line 79 in the previous script and replace it with this:
+
+``` py
+_current_cell_state = np.zeros((batch_size, state_size))
+_current_hidden_state = np.zeros((batch_size, state_size))
+```
+
+TensorFlow uses a data structure called `LSTMStateTuple` internally for its LSTM:s, where the first element in the tuple is the cell state, and the second is the hidden state. So you need to change line 28 where the `init_state` is placeholders are declared to these lines:
+
+``` py
+cell_state = tf.placeholder(tf.float32, [batch_size, state_size])
+hidden_state = tf.placeholder(tf.float32, [batch_size, state_size])
+init_state = tf.nn.rnn_cell.LSTMStateTuple(cell_state, hidden_state)
+```
+
+Changing the forward pass is now straight forward, you just change the function call to create a LSTM and supply the initial state-tuple on line 38–39.
+
+``` py
+
+cell = tf.nn.rnn_cell.BasicLSTMCell(state_size, state_is_tuple=True)
+states_series, current_state = tf.nn.rnn(cell, inputs_series, init_state)
+```
+
+
+The `states_series` will be a list of *hidden states* as tensors, and `current_state` will be a LSTMStateTuple which shows both the *hidden-* and the *cell state* on the last time-step as shown below:
+
+
+![Outputs of the previous states and the last LSTMStateTuple](state-screenshot.png)
+
+So the `current_state` returns the cell- and hidden state in a tuple. They should be separated after calculation and supplied to the placeholders in the run-function on line 90.
+
+
+``` py
+_total_loss, _train_step, _current_state, _predictions_series = sess.run(
+    [total_loss, train_step, current_state, predictions_series],
+    feed_dict={
+        batchX_placeholder: batchX,
+        batchY_placeholder: batchY,
+        cell_state: _current_cell_state,
+        hidden_state: _current_hidden_state
+
+    })
+
+_current_cell_state, _current_hidden_state = _current_state
+```
+
+### Whole program
+Here is the full code:
+
+``` py
+from __future__ import print_function, division
+import numpy as np
+import tensorflow as tf
+import matplotlib.pyplot as plt
+
+num_epochs = 100
+total_series_length = 50000
+truncated_backprop_length = 15
+state_size = 4
+num_classes = 2
+echo_step = 3
+batch_size = 5
+num_batches = total_series_length//batch_size//truncated_backprop_length
+
+def generateData():
+    x = np.array(np.random.choice(2, total_series_length, p=[0.5, 0.5]))
+    y = np.roll(x, echo_step)
+    y[0:echo_step] = 0
+
+    x = x.reshape((batch_size, -1))  # The first index changing slowest, subseries as rows
+    y = y.reshape((batch_size, -1))
+
+    return (x, y)
+
+batchX_placeholder = tf.placeholder(tf.float32, [batch_size, truncated_backprop_length])
+batchY_placeholder = tf.placeholder(tf.int32, [batch_size, truncated_backprop_length])
+
+cell_state = tf.placeholder(tf.float32, [batch_size, state_size])
+hidden_state = tf.placeholder(tf.float32, [batch_size, state_size])
+init_state = tf.nn.rnn_cell.LSTMStateTuple(cell_state, hidden_state)
+
+W2 = tf.Variable(np.random.rand(state_size, num_classes),dtype=tf.float32)
+b2 = tf.Variable(np.zeros((1,num_classes)), dtype=tf.float32)
+
+# Unpack columns
+inputs_series = tf.split(axis=1, num_or_size_splits=truncated_backprop_length, value=batchX_placeholder)
+labels_series = tf.unstack(batchY_placeholder, axis=1)
+
+# Forward pass
+cell = tf.nn.rnn_cell.BasicLSTMCell(state_size, state_is_tuple=True)
+states_series, current_state = tf.nn.rnn(cell, inputs_series, init_state)
+
+logits_series = [tf.matmul(state, W2) + b2 for state in states_series] #Broadcasted addition
+predictions_series = [tf.nn.softmax(logits) for logits in logits_series]
+
+losses = [tf.nn.sparse_softmax_cross_entropy_with_logits(logits=logits, labels=labels) for logits, labels in zip(logits_series,labels_series)]
+total_loss = tf.reduce_mean(losses)
+
+train_step = tf.train.AdagradOptimizer(0.3).minimize(total_loss)
+
+def plot(loss_list, predictions_series, batchX, batchY):
+    plt.subplot(2, 3, 1)
+    plt.cla()
+    plt.plot(loss_list)
+
+    for batch_series_idx in range(num_batches):
+        one_hot_output_series = np.array(predictions_series)[:, batch_series_idx, :]
+        single_output_series = np.array([(1 if out[0] < 0.5 else 0) for out in one_hot_output_series])
+
+        plt.subplot(2, 3, batch_series_idx + 2)
+        plt.cla()
+        plt.axis([0, truncated_backprop_length, 0, 2])
+        left_offset = range(truncated_backprop_length)
+        plt.bar(left_offset, batchX[batch_series_idx, :], width=1, color="blue")
+        plt.bar(left_offset, batchY[batch_series_idx, :] * 0.5, width=1, color="red")
+        plt.bar(left_offset, single_output_series * 0.3, width=1, color="green")
+
+    plt.draw()
+    plt.pause(0.0001)
+
+
+with tf.Session() as sess:
+    sess.run(tf.global_variables_initializer())
+    plt.ion()
+    plt.figure()
+    plt.show()
+    loss_list = []
+
+    for epoch_idx in range(num_epochs):
+        x,y = generateData()
+
+        _current_cell_state = np.zeros((batch_size, state_size))
+        _current_hidden_state = np.zeros((batch_size, state_size))
+
+        print("New data, epoch", epoch_idx)
+
+        for batch_idx in range(num_batches):
+            start_idx = batch_idx * truncated_backprop_length
+            end_idx = start_idx + truncated_backprop_length
+
+            batchX = x[:,start_idx:end_idx]
+            batchY = y[:,start_idx:end_idx]
+
+            _total_loss, _train_step, _current_state, _predictions_series = sess.run(
+                [total_loss, train_step, current_state, predictions_series],
+                feed_dict={
+                    batchX_placeholder:batchX,
+                    batchY_placeholder:batchY,
+                    init_state:_current_state
+                })
+
+            loss_list.append(_total_loss)
+
+            if batch_idx%100 == 0:
+                print("Step",batch_idx, "Loss", _total_loss)
+                plot(loss_list, _predictions_series, batchX, batchY)
+
+plt.ioff()
+plt.show()
+```
+
+In the next section we will create a multi-layered or “deep” recurrent neural network, also with long short-term memory.
+
+
+# Using the Multilayered LSTM API
+
+In the previous section we learned how to use the TensorFlow API to create a Recurrent neural network with Long short-term memory. Now we will make that architecture deep, introducing a LSTM with multiple layers.
+
+
+One thing to notice is that for every layer of the network we will need a hidden state and a cell state. Typically the input to the next LSTM-layer will be the previous state for that particular layer as well as the hidden activations of the “lower” or previous layer. There is a good diagram in [this article](https://arxiv.org/pdf/1409.2329v5.pdf).
+
+We could continue to store the states for each layer in many `LSTMTuples`, but that would require a lot of overhead. You can only input data to the placeholders trough the `feed_dict` as Python lists or Numpy arrays anyways (not as `LSTMTuples`) so we still would have to convert between the datatypes. Why not save the whole state for the network in a big tensor? In order to do this the first thing we want to do is to replace `_current_cell_state` and `_current_hidden_state` on line 81–82 with the more generic:
+
+``` py
+_current_state = np.zeros((num_layers, 2, batch_size, state_size))
+```
+
+You also have to declare the new setting `num_layers = 3` in the beginning of the file, but you may choose any number of layers. The “2” refers to the two states, cell- and hidden-state. So for each layer and each sample in a batch, we have both a cell state and a hidden state vector with the size `state_size`.
+
+Now modify lines 93 to 103 (the run function and the separation of the state tuple) back to the original statement, since the state is now stored in a single tensor.
+
+``` py
+_total_loss, _train_step, _current_state, _predictions_series = sess.run(
+    [total_loss, train_step, current_state, predictions_series],
+    feed_dict={
+        batchX_placeholder: batchX,
+        batchY_placeholder: batchY,
+        init_state: _current_state
+    })
+```
+
+You can change these lines 28 to 30 in the previous post:
+
+``` py
+cell_state = tf.placeholder(tf.float32, [batch_size, state_size])
+hidden_state = tf.placeholder(tf.float32, [batch_size, state_size])
+init_state = tf.nn.rnn_cell.LSTMStateTuple(cell_state, hidden_state)
+```
+
+
+To a single placeholder containing the whole state.
+
+``` py
+init_state = tf.placeholder(tf.float32, [num_layers, 2, batch_size, state_size])
+```
+
+
+Since the TensorFlow Multilayer-LSTM-API accepts the state as a tuple of LSTMTuples, we need to unpack the state state into this structure. For each layer in the state we then create a `LSTMTuple` stated, and put these in a tuple, as shown below. Add this just after the `init_state` placeholder.
+
+``` py
+state_per_layer_list = tf.unpack(init_state, axis=0)
+rnn_tuple_state = tuple(
+    [tf.nn.rnn_cell.LSTMStateTuple(state_per_layer_list[idx][0], state_per_layer_list[idx][1])
+     for idx in range(num_layers)]
+)
+```
+
+The forward pass on lines 40 and 41 should be changed to this:
+
+
+``` py
+# Forward passes
+cell = tf.nn.rnn_cell.LSTMCell(state_size, state_is_tuple=True)
+cell = tf.nn.rnn_cell.MultiRNNCell([cell] * num_layers, state_is_tuple=True)
+states_series, current_state = tf.nn.rnn(cell, inputs_series, initial_state=rnn_tuple_state)
+```
+
+The multi-layered LSTM is created by first making a single `LSMTCell`, and then duplicating this cell in an array, supplying it to the `MultiRNNCell` API call. The forward pass uses the usual `tf.nn.rnn`, let’s print the output of this function, the `states_series` and `current_state` variables.
+
+![Output of the previous states and the last LSTMStateTuples](lstm_tuples.png)
+
+Take a look at the tensor names between single quotes, we see that the RNN is unrolled 15 times. In the `states_series` all outputs have the name “Cell2”, it means that we get the output of the last LSTM layer’s hidden state in the list. Furthermore the LSTMStateTuple in the `current_state` gives the whole state of all layers in the network. “Cell0” refers to the first layer, “Cell1” to the second and “Cell2” to the third and final layer, “h” and “c” refers to hidden- and cell state.
+
+
+### Whole program
+This is the whole self-contained script, just copy and run.
+
+``` py
+from __future__ import print_function, division
+import numpy as np
+import tensorflow as tf
+import matplotlib.pyplot as plt
+
+num_epochs = 100
+total_series_length = 50000
+truncated_backprop_length = 15
+state_size = 4
+num_classes = 2
+echo_step = 3
+batch_size = 5
+num_batches = total_series_length//batch_size//truncated_backprop_length
+num_layers = 3
+
+def generateData():
+    x = np.array(np.random.choice(2, total_series_length, p=[0.5, 0.5]))
+    y = np.roll(x, echo_step)
+    y[0:echo_step] = 0
+
+    x = x.reshape((batch_size, -1))  # The first index changing slowest, subseries as rows
+    y = y.reshape((batch_size, -1))
+
+    return (x, y)
+
+batchX_placeholder = tf.placeholder(tf.float32, [batch_size, truncated_backprop_length])
+batchY_placeholder = tf.placeholder(tf.int32, [batch_size, truncated_backprop_length])
+
+init_state = tf.placeholder(tf.float32, [num_layers, 2, batch_size, state_size])
+
+state_per_layer_list = tf.unpack(init_state, axis=0)
+rnn_tuple_state = tuple(
+    [tf.nn.rnn_cell.LSTMStateTuple(state_per_layer_list[idx][0], state_per_layer_list[idx][1])
+     for idx in range(num_layers)]
+)
+
+W2 = tf.Variable(np.random.rand(state_size, num_classes),dtype=tf.float32)
+b2 = tf.Variable(np.zeros((1,num_classes)), dtype=tf.float32)
+
+# Unpack columns
+inputs_series = tf.split(1, truncated_backprop_length, batchX_placeholder)
+labels_series = tf.unpack(batchY_placeholder, axis=1)
+
+# Forward passes
+cell = tf.nn.rnn_cell.LSTMCell(state_size, state_is_tuple=True)
+cell = tf.nn.rnn_cell.MultiRNNCell([cell] * num_layers, state_is_tuple=True)
+states_series, current_state = tf.nn.rnn(cell, inputs_series, initial_state=rnn_tuple_state)
+
+logits_series = [tf.matmul(state, W2) + b2 for state in states_series] #Broadcasted addition
+predictions_series = [tf.nn.softmax(logits) for logits in logits_series]
+
+losses = [tf.nn.sparse_softmax_cross_entropy_with_logits(logits, labels) for logits, labels in zip(logits_series,labels_series)]
+total_loss = tf.reduce_mean(losses)
+
+train_step = tf.train.AdagradOptimizer(0.3).minimize(total_loss)
+
+def plot(loss_list, predictions_series, batchX, batchY):
+    plt.subplot(2, 3, 1)
+    plt.cla()
+    plt.plot(loss_list)
+
+    for batch_series_idx in range(5):
+        one_hot_output_series = np.array(predictions_series)[:, batch_series_idx, :]
+        single_output_series = np.array([(1 if out[0] < 0.5 else 0) for out in one_hot_output_series])
+
+        plt.subplot(2, 3, batch_series_idx + 2)
+        plt.cla()
+        plt.axis([0, truncated_backprop_length, 0, 2])
+        left_offset = range(truncated_backprop_length)
+        plt.bar(left_offset, batchX[batch_series_idx, :], width=1, color="blue")
+        plt.bar(left_offset, batchY[batch_series_idx, :] * 0.5, width=1, color="red")
+        plt.bar(left_offset, single_output_series * 0.3, width=1, color="green")
+
+    plt.draw()
+    plt.pause(0.0001)
+
+
+with tf.Session() as sess:
+    sess.run(tf.initialize_all_variables())
+    plt.ion()
+    plt.figure()
+    plt.show()
+    loss_list = []
+
+    for epoch_idx in range(num_epochs):
+        x,y = generateData()
+
+        _current_state = np.zeros((num_layers, 2, batch_size, state_size))
+
+        print("New data, epoch", epoch_idx)
+
+        for batch_idx in range(num_batches):
+            start_idx = batch_idx * truncated_backprop_length
+            end_idx = start_idx + truncated_backprop_length
+
+            batchX = x[:,start_idx:end_idx]
+            batchY = y[:,start_idx:end_idx]
+
+            _total_loss, _train_step, _current_state, _predictions_series = sess.run(
+                [total_loss, train_step, current_state, predictions_series],
+                feed_dict={
+                    batchX_placeholder: batchX,
+                    batchY_placeholder: batchY,
+                    init_state: _current_state
+                })
+
+
+            loss_list.append(_total_loss)
+
+            if batch_idx%100 == 0:
+                print("Step",batch_idx, "Batch loss", _total_loss)
+                plot(loss_list, _predictions_series, batchX, batchY)
+
+plt.ioff()
+plt.show()
+
+```
+
+In the next section we will speed up the graph creation by not splitting up our inputs and labels into a Python list.
+
+# Using the DynamicRNN API in TensorFlow 
+
+In the previous section we built a multi-layered LSTM RNN. Here we will speed it up by not splitting up our inputs and labels into a list, as done on line 41–42 in our code. You may remove these rows where inputs_series and labels_series are declared. Next change the tf.nn.rnn call on line 47 to the following:
+
+``` py
+states_series, current_state = tf.nn.dynamic_rnn(cell, tf.expand_dims(batchX_placeholder, -1), initial_state=rnn_tuple_state)
+states_series = tf.reshape(states_series, [-1, state_size])
+```
+
+The dynamic_rnn function takes the batch inputs of shape `[batch_size, truncated_backprop_length, input_size]`, thus the addition of a single dimension on the end. Output will be the last state of every layer in the network as an LSTMStateTuple stored in `current_state` as well as a tensor `states_series` with the shape `[batch_size, truncated_backprop_length, state_size]` containing the hidden state of the last layer across all time-steps.
+
+![The states are not in lists anymore.](lstm_tuples.png)
+
+The tensor states_series is reshaped on the second row in the code sample above to shape `[batch_size*truncated_backprop_length, state_size]`, we will see the reason for this shortly. You may read more about `dynamic_rnn` in the documentation.
+
+Now input this two lines below the reshaping of the `states_series`.
+
+``` py
+logits = tf.matmul(states_series, W2) + b2 #Broadcasted addition
+labels = tf.reshape(batchY_placeholder, [-1])
+```
+
+Notice that we are now only working with tensors, Python lists were a thing of the past. The calculation of the `logits` and the `labels` are visualized below, notice the `state_series` variable that was reshaped earlier. In TensorFlow reshaping is done in [C-like index order](https://docs.scipy.org/doc/numpy/reference/generated/numpy.reshape.html). It means that we read from the source tensor and “write” to the destination tensor with the last axis index changing fastest, and the first axis index changing slowest. The result of the reshaping will be as visualized in the figure below, where similar colors denote the same time-step, and the vertical grouped spacing of elements denote different batches.
+
+
+
+![Visualization of the calculations, similar color denote same time-step, vertical spacing denote new batch.](calc.png)
+
+
+Let’s go trough all the tensors in the figure above, first let’s start with the sizes. We have that `batch_size=3`, `state_size=3`, `num_classes=2` and `truncated_backprop_length=3`. The tensor `states_series` have shape `[batch_size*truncated_backprop_length, state_size]`, `labels` have shape `[batch_size*truncated_backprop_length]`, `logits` have shape `[batch_size*truncated_backprop_length, num_classes]`, `W2` have shape `[state_size, num_classes]` and `b2` have shape `[1, num_classes]`. It can be a bit tricky to keep track of all the tensors, but drawing and visualizing with colors definitely helps.
+
+Next calculate the predictions for the visualization:
+
+``` py
+logits_series = tf.unpack(tf.reshape(logits, [batch_size, truncated_backprop_length, num_classes]), axis=1)
+predictions_series = [tf.nn.softmax(logit) for logit in logits_list]
+```
+
+Here we actually split the tensors into lists again. This is perhaps not the best way to do it, but it’s quick and dirty, and the plot function is already expecting a list.
+
+The `sparse_softmax_cross_entropy_with_logits` can take the shape of our tensors! Modify the `losses` calculation to this.
+
+``` py
+losses = tf.nn.sparse_softmax_cross_entropy_with_logits(logits, labels)
+```
+
+As we can read in the API the `logits` must have the shape `[batch_size, num_classes]` and `labels` must have the shape `[batch_size]`. But now we are treating all time-steps as elements in our batch, so it will work out as we want.
+
+### Whole program
+
+This is the whole self-contained script, just copy and run.
+
+
+``` py
+from __future__ import print_function, division
+import numpy as np
+import tensorflow as tf
+import matplotlib.pyplot as plt
+
+num_epochs = 100
+total_series_length = 50000
+truncated_backprop_length = 15
+state_size = 4
+num_classes = 2
+echo_step = 3
+batch_size = 5
+num_batches = total_series_length//batch_size//truncated_backprop_length
+num_layers = 3
+
+def generateData():
+    x = np.array(np.random.choice(2, total_series_length, p=[0.5, 0.5]))
+    y = np.roll(x, echo_step)
+    y[0:echo_step] = 0
+
+    x = x.reshape((batch_size, -1))  # The first index changing slowest, subseries as rows
+    y = y.reshape((batch_size, -1))
+
+    return (x, y)
+
+batchX_placeholder = tf.placeholder(tf.float32, [batch_size, truncated_backprop_length])
+batchY_placeholder = tf.placeholder(tf.int32, [batch_size, truncated_backprop_length])
+
+init_state = tf.placeholder(tf.float32, [num_layers, 2, batch_size, state_size])
+
+state_per_layer_list = tf.unpack(init_state, axis=0)
+rnn_tuple_state = tuple(
+    [tf.nn.rnn_cell.LSTMStateTuple(state_per_layer_list[idx][0], state_per_layer_list[idx][1])
+     for idx in range(num_layers)]
+)
+
+W2 = tf.Variable(np.random.rand(state_size, num_classes),dtype=tf.float32)
+b2 = tf.Variable(np.zeros((1,num_classes)), dtype=tf.float32)
+
+# Forward passes
+cell = tf.nn.rnn_cell.LSTMCell(state_size, state_is_tuple=True)
+cell = tf.nn.rnn_cell.MultiRNNCell([cell] * num_layers, state_is_tuple=True)
+states_series, current_state = tf.nn.dynamic_rnn(cell, tf.expand_dims(batchX_placeholder, -1), initial_state=rnn_tuple_state)
+states_series = tf.reshape(states_series, [-1, state_size])
+
+logits = tf.matmul(states_series, W2) + b2 #Broadcasted addition
+labels = tf.reshape(batchY_placeholder, [-1])
+
+logits_series = tf.unpack(tf.reshape(logits, [batch_size, truncated_backprop_length, num_classes]), axis=1)
+predictions_series = [tf.nn.softmax(logit) for logit in logits_series]
+
+
+losses = tf.nn.sparse_softmax_cross_entropy_with_logits(logits, labels)
+total_loss = tf.reduce_mean(losses)
+
+train_step = tf.train.AdagradOptimizer(0.3).minimize(total_loss)
+
+def plot(loss_list, predictions_series, batchX, batchY):
+    plt.subplot(2, 3, 1)
+    plt.cla()
+    plt.plot(loss_list)
+
+    for batch_series_idx in range(5):
+        one_hot_output_series = np.array(predictions_series)[:, batch_series_idx, :]
+        single_output_series = np.array([(1 if out[0] < 0.5 else 0) for out in one_hot_output_series])
+
+        plt.subplot(2, 3, batch_series_idx + 2)
+        plt.cla()
+        plt.axis([0, truncated_backprop_length, 0, 2])
+        left_offset = range(truncated_backprop_length)
+        plt.bar(left_offset, batchX[batch_series_idx, :], width=1, color="blue")
+        plt.bar(left_offset, batchY[batch_series_idx, :] * 0.5, width=1, color="red")
+        plt.bar(left_offset, single_output_series * 0.3, width=1, color="green")
+
+    plt.draw()
+    plt.pause(0.0001)
+
+
+with tf.Session() as sess:
+    sess.run(tf.initialize_all_variables())
+    plt.ion()
+    plt.figure()
+    plt.show()
+    loss_list = []
+
+    for epoch_idx in range(num_epochs):
+        x,y = generateData()
+
+        _current_state = np.zeros((num_layers, 2, batch_size, state_size))
+
+        print("New data, epoch", epoch_idx)
+
+        for batch_idx in range(num_batches):
+            start_idx = batch_idx * truncated_backprop_length
+            end_idx = start_idx + truncated_backprop_length
+
+            batchX = x[:,start_idx:end_idx]
+            batchY = y[:,start_idx:end_idx]
+
+            _total_loss, _train_step, _current_state, _predictions_series = sess.run(
+                [total_loss, train_step, current_state, predictions_series],
+                feed_dict={
+                    batchX_placeholder: batchX,
+                    batchY_placeholder: batchY,
+                    init_state: _current_state
+                })
+
+
+            loss_list.append(_total_loss)
+
+            if batch_idx%100 == 0:
+                print("Step",batch_idx, "Batch loss", _total_loss)
+                plot(loss_list, _predictions_series, batchX, batchY)
+
+plt.ioff()
+plt.show()
+```
+
+In the next section we will regularize the network to use dropout, making it less prone to overfitting.
+
+# Using the Dropout API in TensorFlow 
+
+In the previous part we built a multi-layered LSTM RNN. In this post we will make it less prone to overfitting (called regularizing) by adding a something called dropout. It’s a weird trick to randomly turn off activations of neurons during training, and was pioneered by Geoffrey Hinton among others, you can read their initial [article](https://arxiv.org/pdf/1207.0580v1.pdf) here.
+
+Fortunately this is very simple to do in TensorFlow, between the lines 41–42 you simply add a `DropoutWrapper` with the probability *to not* drop out, called `output_keep_prob`. Change lines 41–42 to the code below.
+
+
+``` py
+
+cell = tf.nn.rnn_cell.LSTMCell(state_size, state_is_tuple=True)
+cell = tf.nn.rnn_cell.DropoutWrapper(cell, output_keep_prob=0.5)
+cell = tf.nn.rnn_cell.MultiRNNCell([cell] * num_layers, state_is_tuple=True)
+```
+
+
+Don’t drop out too much or you will need a large state to be sure to keep some of the information (in our toy example at least). As you can read in [this article](https://arxiv.org/pdf/1409.2329v5.pdf) dropout is implemented between RNN layers in TensorFlow, not on recurrent connections.
+
+
+### Whole program
+
+This is the whole self-contained script, just copy and run.
+
+
+``` py
+from __future__ import print_function, division
+import numpy as np
+import tensorflow as tf
+import matplotlib.pyplot as plt
+
+num_epochs = 100
+total_series_length = 50000
+truncated_backprop_length = 15
+state_size = 4
+num_classes = 2
+echo_step = 3
+batch_size = 5
+num_batches = total_series_length//batch_size//truncated_backprop_length
+num_layers = 3
+
+def generateData():
+    x = np.array(np.random.choice(2, total_series_length, p=[0.5, 0.5]))
+    y = np.roll(x, echo_step)
+    y[0:echo_step] = 0
+
+    x = x.reshape((batch_size, -1))  # The first index changing slowest, subseries as rows
+    y = y.reshape((batch_size, -1))
+
+    return (x, y)
+
+batchX_placeholder = tf.placeholder(tf.float32, [batch_size, truncated_backprop_length])
+batchY_placeholder = tf.placeholder(tf.int32, [batch_size, truncated_backprop_length])
+
+init_state = tf.placeholder(tf.float32, [num_layers, 2, batch_size, state_size])
+
+state_per_layer_list = tf.unpack(init_state, axis=0)
+rnn_tuple_state = tuple(
+    [tf.nn.rnn_cell.LSTMStateTuple(state_per_layer_list[idx][0], state_per_layer_list[idx][1])
+     for idx in range(num_layers)]
+)
+
+W = tf.Variable(np.random.rand(state_size+1, state_size), dtype=tf.float32)
+b = tf.Variable(np.zeros((1,state_size)), dtype=tf.float32)
+
+W2 = tf.Variable(np.random.rand(state_size, num_classes),dtype=tf.float32)
+b2 = tf.Variable(np.zeros((1,num_classes)), dtype=tf.float32)
+
+# Forward passes
+cell = tf.nn.rnn_cell.LSTMCell(state_size, state_is_tuple=True)
+cell = tf.nn.rnn_cell.DropoutWrapper(cell, output_keep_prob=0.5)
+cell = tf.nn.rnn_cell.MultiRNNCell([cell] * num_layers, state_is_tuple=True)
+states_series, current_state = tf.nn.dynamic_rnn(cell, tf.expand_dims(batchX_placeholder, -1), initial_state=rnn_tuple_state)
+states_series = tf.reshape(states_series, [-1, state_size])
+
+logits = tf.matmul(states_series, W2) + b2 #Broadcasted addition
+labels = tf.reshape(batchY_placeholder, [-1])
+
+logits_series = tf.unpack(tf.reshape(logits, [batch_size, truncated_backprop_length, 2]), axis=1)
+predictions_series = [tf.nn.softmax(logit) for logit in logits_series]
+
+losses = tf.nn.sparse_softmax_cross_entropy_with_logits(logits, labels)
+total_loss = tf.reduce_mean(losses)
+
+train_step = tf.train.AdagradOptimizer(0.3).minimize(total_loss)
+
+def plot(loss_list, predictions_series, batchX, batchY):
+    plt.subplot(2, 3, 1)
+    plt.cla()
+    plt.plot(loss_list)
+
+    for batch_series_idx in range(5):
+        one_hot_output_series = np.array(predictions_series)[:, batch_series_idx, :]
+        single_output_series = np.array([(1 if out[0] < 0.5 else 0) for out in one_hot_output_series])
+
+        plt.subplot(2, 3, batch_series_idx + 2)
+        plt.cla()
+        plt.axis([0, truncated_backprop_length, 0, 2])
+        left_offset = range(truncated_backprop_length)
+        plt.bar(left_offset, batchX[batch_series_idx, :], width=1, color="blue")
+        plt.bar(left_offset, batchY[batch_series_idx, :] * 0.5, width=1, color="red")
+        plt.bar(left_offset, single_output_series * 0.3, width=1, color="green")
+
+    plt.draw()
+    plt.pause(0.0001)
+
+
+with tf.Session() as sess:
+    sess.run(tf.initialize_all_variables())
+    plt.ion()
+    plt.figure()
+    plt.show()
+    loss_list = []
+
+    for epoch_idx in range(num_epochs):
+        x,y = generateData()
+
+        _current_state = np.zeros((num_layers, 2, batch_size, state_size))
+
+        print("New data, epoch", epoch_idx)
+
+        for batch_idx in range(num_batches):
+            start_idx = batch_idx * truncated_backprop_length
+            end_idx = start_idx + truncated_backprop_length
+
+            batchX = x[:,start_idx:end_idx]
+            batchY = y[:,start_idx:end_idx]
+
+            _total_loss, _train_step, _current_state, _predictions_series = sess.run(
+                [total_loss, train_step, current_state, predictions_series],
+                feed_dict={
+                    batchX_placeholder: batchX,
+                    batchY_placeholder: batchY,
+                    init_state: _current_state
+                })
+
+
+            loss_list.append(_total_loss)
+
+            if batch_idx%100 == 0:
+                print("Step",batch_idx, "Batch loss", _total_loss)
+                plot(loss_list, _predictions_series, batchX, batchY)
+
+plt.ioff()
+plt.show()
+```
+

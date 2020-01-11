@@ -1,0 +1,257 @@
+**Dear reader**,
+
+This article has been open sourced, it's available here https://github.com/3h4/tutorials. Any help to make better, adding questions or clarifying the explanations are greatly appreciated!
+ 
+---
+
+
+I have tried to understand backpropagation by reading some explanations, but I’ve always felt that the derivations lack some details. In this article I will try to explain it from the beginning hopefully not leaving anything out (theory wise at least). Let’s get started!
+ 
+
+## Forward propagation
+We have a fully-connected feed-forward neural network. It has $L$ layers (could be any number) and any number of neurons in each layer. The activations of the neurons in layer $l$ is stored in an activations column-vector $a^l$, where the superscript index denote the layer. The connections from the neurons in layer $l-1$ to the layer $l$ are stored in a weight matrix $\bold{W}^l$, and the biases for each neuron is stored in a bias column-vector $\bold{b}^l$.
+
+For a simple forward pass we have that:
+
+
+$$ \bold{a}^l = \sigma \left( \bold{W}^l\bold{a}^{l-1} + \bold{b} \right) $$
+
+The matrix multiplications in this formula is visualized in the figure below, where we have introduced a new vector $\bold{z}^l$. which is the activation without the application of a component-wise transfer function, so that $\bold{a}^l = \sigma( \bold{z}^l )$. I will call this value the “input sum” of a neuron.
+
+
+![Schematic of a fully connected layer and a matrix multiplication without transfer-function applied.](connect-layer.png)
+
+??
+The number neurons in layer $l-1$ is the same as
+\w: Number of rows in $\bold{W}^l$
+\c: Number of columns in $\bold{W}^l$
+\w: Number of elements in $\bold{W}^l$
+\penalty:5
+\shownext:true
+??
+
+??
+The weights of the connections to the second neuron in layer $l$ are in the
+\c: second row of $\bold{W}^l$
+\w: second column of $\bold{W}^l$
+\w: all components of $\bold{W}^l$
+\penalty:5
+\shownext:true
+??
+
+??
+How many components do the bias vector, $\bold{b}^l$, have in the example above?
+\w: 1 
+\w: 2
+\c: 3
+\penalty:5
+??
+
+
+The whole network is shown below, from the input vector $\bold{x}$, to the output activation vector $\bold{a^L}$. The connections leading in to a specific neuron is shown in colors in two layers:
+
+![The whole network visualized](whole-net.png)
+
+One thing we can do, just to get a feeling of it is to write the network computation into one mathematical expression. Let’s write down the formula for calculating the *n:th* element of the output vector in the final layer:
+
+
+
+$$
+\scriptsize
+a_n^L = \left[
+\sigma
+\left(
+\sum_{m} w_{nm}^L 
+\left[
+\cdots
+\left[
+\sigma
+\left(
+ \sum_{j} w_{kj}^2 
+
+\left[
+\sigma
+\left(
+\sum_i w_{ji}^1x_i +b_j^1
+\right)
+\right] + b_k^2 
+\right)
+\right]
+\cdots
+\right]_m + b_n^L
+\right)
+\right]_n
+$$
+
+Here we have introduced new notation where $w^l_{uv}$ is denoting the connection from the $v$:th neuron in layer $l-1$ to the $u$:th neuron in layer $l$, and $b^l_u$ is the bias of the $u$:th neuron in layer $l$. The expression can be a bit confusing, particularly because of all the new indices. But the biggest takeaway from this is that the neural network is just a mathematical function. And this function can be *differentiated* with respect to any variable. We will use our newly introduced notation, and define an error function, or “cost” function C using a sample of our training data, and then see how the error changes as we change our weights.
+
+## Differentiating the error
+Three adjacent layers anywhere in the network are shown in the figure below, the index letter for the neurons in the layers are $j$, $k$ and $m$ respectively, and the index letter for the layer is $l$. 
+
+![Tree layers anywhere in the network, derivative is taken with respect to the weight shown in red. The middle neuron is enlarged for visualization purposes.](three-layers.png)
+
+First calculate the input sum of a neuron $k$ in layer $l$:
+
+$$ z_k^l = \sum_j w_{kj}^l a^{l-1}_j + b_k^l $$
+
+Then take the transfer function, it could be any function with a first derivative:
+
+$$ a_k^l = \sigma(z_k^l) $$
+
+Now finally calculate the input sum of a neuron $m$ in layer $l+1$.
+
+$$ z_m^{l+1} = \sum_{k} w_{mk}^{l+1} a^l_k + b_m^l $$
+
+Here we have gone forward one step in the layers, from the activations in layer $l-1$ to the input sums of neurons in layer $l+1$. An error function C is defined using one example from our training data, and its derivative is calculated with respect to a single weight in layer $l$.
+
+
+
+$$
+
+\frac{\partial C }{\partial w_{kj}^l} =
+ \frac{\partial C }{\partial z_k^l} \frac{\partial z_k^l }{\partial w_{kj}^l} = 
+ \frac{\partial C }{\partial a_k^l} \frac{\partial a_k^l }{\partial z_k^l} \frac{\partial z_k^l }{\partial w_{kj}^l} = \\[1em]
+ \left( \sum_m \frac{\partial C }{\partial z_m^{l+1}} \frac{\partial z_m^{l+1}}{\partial a_k^{l}} \right ) \frac{\partial a_k^l } {\partial z_k^l} \frac{\partial z_k^l }{\partial w_{kj}^l} = \\[1em]
+\left( \sum_m \frac{\partial C }{\partial z_m^{l+1}} 
+w_{mk}^{l+1} \right ) \sigma'(z_k^l) a_j^{l-1}
+$$
+
+
+You may notice the sum in the expression above, it is due to the chain rule, all contributions from the neurons in layer $l+1$ have to be accounted for since their value is affecting the end error (their value is depending on the weight that we are taking the derivative with respect to). This is visualized in the figure shown above.
+
+One important thing to remember is that we have fixed $k$ and $j$, thus we only see how the error changes when ___one single weight is manipulated___ in the calculation. All the other weights are held constant, and the derivative of a constant is simply zero. But the $m$ index in layer $l+1$ is not fixed, the activation of all neurons in that layer are changed as we change our specified weight.
+
+
+??
+$w_{kj}^l$ is the weight of the connection between
+
+\w: The $k$:th neuron in layer $l-1$ and the $j$:th neuron in layer $l$
+
+\c: The $j$:th neuron in layer $l-1$ and the $k$:th neuron in layer $l$
+
+\w: The $j$:th neuron in layer $l$ and the $k$:th neuron in layer $l+1$
+\penalty:10
+??
+
+??
+Why is it that $ \frac{\partial C }{\partial a_k^l} = \left( \sum_m \frac{\partial C }{\partial z_m^{l+1}} \frac{\partial z_m^{l+1}}{\partial a_k^{l}} \right )$? 
+
+\c: Because the activation of neuron $k$ in layer $l$ affects all input sums in layer $l+1$
+\c: Because $k$ is fixed, and $m$ is not.
+??
+
+## Error signal
+Now let’s make a definition, the “error signal” of a neuron $k$ in layer $l$ as *how much the total error changes when the input sum of the neuron is changed*:
+
+$$\delta_k^l \equiv \frac{\partial C }{\partial z_k^l}$$
+
+So every neuron in the whole network now has an error signal defined. But if you look at the equation above, you will see that we have already expanded this expression:
+
+$$
+\frac{\partial C }{\partial z_k^l}= 
+ \left( \sum_m \frac{\partial C }{\partial z_m^{l+1}} 
+w_{mk}^{l+1} \right ) \sigma'(z_k^l)
+$$
+
+So we have a *recursive formula* for the error signals, using our definitions:
+
+$$
+\delta_k^l = 
+ \left( \sum_m \delta_m^{l+1} 
+w_{mk}^{l+1} \right ) \sigma'(z_k^l)
+$$
+
+
+You may wonder what happened with the biases, they are also “weights” and the error function should be derived with respect to them as well.
+
+$$
+\frac{\partial C }{\partial b_k^l} = \frac{\partial C }{\partial z_k^l} \underbrace{ \frac{\partial z_k^l }{\partial b_k^l}}_1 = \delta_k^l
+$$
+
+
+So the gradient of the cost function with respect to the bias for each neuron is simply its error signal!
+
+
+## Propagating backwards
+
+In order to use this recursive formula we need to obtain the first error signal in the series, i.e. the error signal of the neurons in the final layer $L$. This is the starting value, after having this we can “propagate” backwards calculating all the error signals.
+
+$$
+\delta_j^L = \frac{\partial C }{\partial z_j^L} = \frac{\partial C }{\partial a_j^L} \frac{\partial a_j^L }{\partial z_j^L} = \frac{\partial C }{\partial a_j^L} \sigma'(z_j^L)
+$$
+
+The only derivative that has to be calculated here is the derivative of the cost function with respect to the activations of the last layer, which is the *output of the network*. So this will depend on the error-function we choose.
+
+# Matrix form
+
+Since we now can recursively calculate all the error signals for all neurons in the network, it is possible to obtain the derivative of the cost function with respect to all weights. Training is done by subtracting from each weight a small fraction of its corresponding derivative, called the [delta rule](https://en.wikipedia.org/wiki/Delta_rule). Since everything is known, the network is trainable! But we would like a more efficient notation, since we previously only worked with scalars. Vector and matrix notation is to the rescue! Remember that we stored all weights for layer $l$ in a matrix $\bold{W}^l$, where the weights connecting from all neurons in $l-1$ to a neuron in $l$ are stored as as rows? Take a look at the first figure in the article, "Schematic of a fully connected layer" to be reminded about this. Now use the weight matrix, take its *transpose*. That will mean that *the connections to the neurons in the layer are stored as columns*. Put all the error signals for the layer in a column vector, and multiply it with with the transposed weight matrix. Sorry about this, but new notation again, there are a total of $M$ neurons in layer $l+1$ and $K$ neurons in layer $l$. 
+
+$$
+\scriptsize
+(W^{l+1} )^T \delta^{l+1} = \begin{bmatrix}
+w_{11}^{l+1} & \dots & w_{m1}^{l+1} & \dots & w_{M1}^{l+1} \\
+\vdots & \ddots & \vdots & \ddots & \vdots\\
+w_{1k}^{l+1} & \dots & w_{mk}^{l+1} & \dots & w_{Mk}^{l+1} \\
+\vdots & \ddots & \vdots & \ddots & \vdots \\
+w_{1K}^{l+1} & \dots & w_{mK}^{l+1} & \dots & w_{MK}^{l+1}
+\end{bmatrix}
+\begin{bmatrix}
+\delta^{l+1}_1 \\
+\vdots \\
+\delta^{l+1}_m \\
+\vdots \\
+\delta^{l+1}_M \\
+\end{bmatrix}
+ =
+\begin{bmatrix}
+\sum_{m=1}^{M} \delta^{l+1}_m w_{m1}^{l+1} \\
+\vdots \\
+\sum_{m=1}^{M} \delta^{l+1}_m w_{mk}^{l+1} \\
+\vdots \\
+\sum_{m=1}^{M} \delta^{l+1}_m w_{mK}^{l+1} \\
+\end{bmatrix}
+\backsim \delta^l  
+$$
+
+The similarity sign is because we are lacking the multiplication of the derivative of the input sum in layer l. Make sure you understand this matrix multiplication, use pen an paper to sketch the calculations if possible.
+
+Finally using all we derived previously, we can state formulas for calculating the gradient of the cost function with respect to the weights as following:
+
+$$\delta^L = \nabla_{a^L}C \odot \sigma'(z^L) \\[0.7em]
+\delta^l = (w^{l+1})^T \delta^{l+1} \odot \sigma'(z^l) \\[0.7em] 
+\frac{\partial C }{\partial b_j^l}  = \delta^l_j \\[0.7em]
+\frac{\partial C }{\partial w_{kj}^l} = \delta_k^l a_j^{l-1} 
+$$
+
+The nabla symbol is the derivative with respect to the output variables of the final layer, and the dot with a circle denotes component-wise multiplication.
+
+## Outline of training algorithm
+Using these formulas we can effectively write an algorithm train the network, using single training sample at a time.
+
+
+1. Do forwards propagation, calculate the input sum and activation of each neuron by iteratively do matrix-vector multiplication and taking component-wise transfer function of all neurons in every layer. Save the results for later.
+
+2. Calculate the the error signal of the final layer L, by obtaining the gradient of the cost function with respect to the outputs of the network. This expression will depend on the current training sample (input and output), as well as the chosen cost function.
+
+3. Do backwards propagation, calculate the error signals of the neurons in each layer. The input sum of each neuron is required to do this, and it is also done by iteratively computing matrix-vector multiplications (see formula above).
+
+4. Calculate the derivative of the cost function with respect to the weights, the activation of each neuron is required to do this (see the formula above). This will be a matrix with the same shape as the weight matrix.
+
+5. Calculate the derivative of the cost function with respect to the biases (see the formula above). This will only be a column vector.
+6. Update the weights according to the delta rule.
+
+
+## Next step
+This explanation is how to train a network using only one training sample at a time, but how to do it using batch learning? What we can do is just putting the inputs of the training samples as *columns in a matrix*, doing the forward propagation the *input sums* and *activations* will also be in matrices, where *column index is the sample index, and the row index is the neuron index*.
+
+Similarly the error signals for different layers and samples will be in matrices. However, the derivatives of the cost function with respect to the weights will be in a three-dimensional tensor using the dimensions `[sample_idx, neuron_idx, weight_idx]`. Reducing a sum over the samples in this tensor will give the gradient matrix for the weights in the actual layer, and the weights can be updated using the delta rule.
+
+??
+What does the "$\odot$" operation mean?
+\c: Component-wise multiplication of components between matrices.
+\w: Matrix multiplication between matrices.
+\shownext:false
+??
+
+## Next step
+In the [next post](/@educaora/How_to_build_a_Recurrent_Neural_Network_in_TensorFlow) we will get hands on with the backpropagation and use it to train a recurrent neural network.

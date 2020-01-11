@@ -1,0 +1,119 @@
+**Dear reader,** 
+
+This article was originally posted on [Medium.com](//medium.com), at the end of 2016. Three years have since passed, we are at the beginning of a new decade, and have luckily not seen the robot apocalypse yet. However, TensorFlow 2.0 has been released and this tutorial is unfortionatley completely broken.
+
+Therefore it is now "open-sourced", and the source is available here: https://github.com/3h4/tutorials. If you happen to go trough this tutorial and would like to help to make up to date, please accept my deepest gratitude. The results are probably correct, perhaps only some code and explanations should be changed.
+
+Some key changes in TensorFlow 2.0 are the following:
+- *No sessions or placeholders*
+- The `Session.run` call is replaced with a call to `forward`
+- The optional `tf.function` decorator can be added for performance
+- Eager execution (no computational graph?!)
+ 
+You can read more on the release [here](https://blog.tensorflow.org/2019/09/tensorflow-20-is-now-available.html), and how to [migrate](https://www.tensorflow.org/guide/migrate).
+If you think you are an expert you can read [this](https://www.tensorflow.org/tutorials/quickstart/advanced) (only for experts 🧐😜). Anyways, here comes some questions on the new API:
+
+??
+What are *placholders* replaced with?
+\w: `tf.gpu_accelerated_placeholders`
+\w: `tf.variables` 
+\c: Arguments to the `forward` function.
+\penalty:5
+\shownext:true
+??
+
+??
+What should `Session.run` be replaced with?
+\w: A Python Class 
+\w: `tf.TensorCalc` 
+\c: A Python function
+??
+
+??
+Do you need to use the `feed_dict`?
+\w: Yes
+\c: No
+??
+
+
+And that was all, here comes the tutorial:
+
+---
+
+In this tutorial we will do simple simple matrix multiplication in [TensorFlow](//tensorflow.org) and compare the speed of the GPU to the CPU, the basis for why Deep Learning has become state-of-the art in recent years.
+
+
+## What is TensorFlow?
+It’s a framework to perform computation very efficiently, and it can tap into the GPU (Graphics Processor Unit) in order too speed it up even further. This will make a huge effect as we shall see shortly. TensorFlow can be controlled by a simple Python API, which we will be using in this tutorial.
+
+## Graphs and Tensors
+When a native computation is done in many programming languages, it is usually executed directly. If you type `a = 3*4 + 2` in a Python console, you will immediately have the result. Running a number of mathematical computations like this in an IDE also allows you to set breakpoints, stop the execution and see intermediate results. This is not possible in TensorFlow, what you actually do is *specifying the computations* that will be done. This is accomplished by creating a computational graph, which takes multidimensional matrices called “Tensors” and does computations on them. Each node in the graph denotes an operation. When creating the graph, you have the possibility to explicitly specify where the computations should be done, on the GPU or CPU. By default it will check if a GPU is available, and use that.
+
+
+## Sessions
+The Graph is run in a Session, where you specify what operations to execute in the `run`-function. Data from outside may also be supplied to `placeholders` in the graph, so you can run it multiple times with different input. Furthermore, intermediate result (such as model weights) can be incrementally updated in `variables`, which will retain their values between runs.
+
+## Example
+This code example creates pairs of random matrices, clocks the multiplication of them depending on size and device placement.
+
+``` py
+from __future__ import print_function
+import matplotlib
+import matplotlib.pyplot as plt
+import tensorflow as tf
+import time
+
+def get_times(maximum_time):
+
+    device_times = {
+        "/gpu:0":[],
+        "/cpu:0":[]
+    }
+    matrix_sizes = range(500,50000,50)
+
+    for size in matrix_sizes:
+        for device_name in device_times.keys():
+
+            print("####### Calculating on the " + device_name + " #######")
+
+            shape = (size,size)
+            data_type = tf.float16
+            with tf.device(device_name):
+                r1 = tf.random_uniform(shape=shape, minval=0, maxval=1, dtype=data_type)
+                r2 = tf.random_uniform(shape=shape, minval=0, maxval=1, dtype=data_type)
+                dot_operation = tf.matmul(r2, r1)
+
+
+            with tf.Session(config=tf.ConfigProto(log_device_placement=True)) as session:
+                    start_time = time.time()
+                    result = session.run(dot_operation)
+                    time_taken = time.time() - start_time
+                    print(result)
+                    device_times[device_name].append(time_taken)
+
+            print(device_times)
+
+            if time_taken > maximum_time:
+                return device_times, matrix_sizes
+
+
+device_times, matrix_sizes = get_times(1.5)
+gpu_times = device_times["/gpu:0"]
+cpu_times = device_times["/cpu:0"]
+
+plt.plot(matrix_sizes[:len(gpu_times)], gpu_times, 'o-')
+plt.plot(matrix_sizes[:len(cpu_times)], cpu_times, 'o-')
+plt.ylabel('Time')
+plt.xlabel('Matrix size')
+plt.show()
+```
+
+You see that the GPU (a GTX 1080 in my case) is *much* faster than the CPU (Intel i7). Back-propagation is almost exclusively used today when training neural networks, and it can be stated as a number of matrix multiplications (backward and forward pass). That’s why using GPU:s are so important for quickly training deep-learning models.
+
+
+![CPU time in green and GPU time in blue. The initial GPU delay at the first iteration is perhaps due to TensorFlow setting starting up stuff.](plot.png)
+CPU time in green and GPU time in blue. The initial GPU delay at the first iteration is perhaps due to TensorFlow setting starting up stuff.
+
+## Next step
+In the [next post](/@educaora/How_to_build_a_Recurrent_Neural_Network_in_TensorFlow) we will use TensorFlow to create a recurrent neural network.
+
