@@ -7,5 +7,6 @@ Open sourced tutorials posted on:
 
 * https://educaora.com/@educaora/Introduction_to_TensorFlow_%E2%80%94_CPU_vs_GPU
 
-
+# Todo:
+Make it work for Tensorflow 2.0
 
